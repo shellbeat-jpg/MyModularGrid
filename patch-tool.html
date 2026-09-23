@@ -98,6 +98,12 @@
     padding: 7px 8px 6px 9px; border-bottom: 1px solid var(--panel-border);
     display: flex; align-items: flex-end; justify-content: space-between; gap: 6px;
   }
+  .modbox-head.module-filterable { cursor: pointer; }
+  .modbox-head.module-filterable:hover { background: rgba(255,255,255,.03); }
+  .modbox-head.module-selected {
+    background: rgba(79,159,224,.12);
+    box-shadow: inset 0 0 0 1px rgba(79,159,224,.55);
+  }
   .modbox-head-text { min-width: 0; }
   .modbox-name { font-family: var(--font-panel); font-size: 11.5px; font-weight: 600; color: var(--text); line-height: 1.25; }
   .modbox-sub { font-size: 9px; color: var(--text-faint); margin-top: 1px; }
@@ -143,6 +149,7 @@
     color: var(--text-faint); font-family: var(--font-panel); font-weight: 700; cursor: pointer;
     border: 1px solid var(--panel-border-strong); border-radius: 3px; margin-bottom: 1px;
   }
+  .more-ports-trigger.has-hidden-ports { color: var(--pitch); border-color: var(--pitch); }
   .more-ports-trigger:hover { background: #23262b; color: var(--text); border-color: #4a4e56; }
 
   .ports-popover {
@@ -160,7 +167,7 @@
   .popover-row .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .popover-row .state-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
   .popover-row.state-hidden .state-dot { background: var(--pitch); }   /* blau = ausgeblendet */
-  .popover-row.state-visible .state-dot { background: var(--danger); } /* rot = eingeblendet */
+  .popover-row.state-visible .state-dot { background: var(--ok); }     /* grün = eingeblendet */
   .popover-row.state-visible { color: var(--text); }
   .popover-row.locked { cursor: not-allowed; opacity: .65; }
   .popover-row.locked .state-dot { box-shadow: 0 0 0 2px rgba(255,255,255,.12); }
@@ -241,6 +248,7 @@
   let nextConnId = 1;
   let activeLayers = new Set();
   let selectedVoice = "";
+  let selectedModule = "";
   let armed = null; 
   let portEls = {}; 
   let dragging = null; 
@@ -299,6 +307,20 @@
       if (revealedPorts.has(pk)) revealedPorts.delete(pk); else revealedPorts.add(pk);
     }
     render();
+  }
+
+  function moduleReach(startModId) {
+    if (!startModId || !findModule(startModId)) return null;
+    const seen = new Set([startModId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      state.connections.forEach(c => {
+        if (seen.has(c.fromMod) && !seen.has(c.toMod)) { seen.add(c.toMod); changed = true; }
+        if (seen.has(c.toMod) && !seen.has(c.fromMod)) { seen.add(c.fromMod); changed = true; }
+      });
+    }
+    return seen;
   }
 
   function resolveConnection(aMod, aPort, bMod, bPort) {
@@ -466,8 +488,15 @@
         headText.innerHTML = `<div class="modbox-name">${escapeHtml(m.name)}</div><div class="modbox-sub">${escapeHtml(m.manufacturer)}${!m.active ? " · inaktiv" : ""}</div>`;
 
         const head = document.createElement("div");
-        head.className = "modbox-head";
+        head.className = "modbox-head module-filterable";
+        head.classList.toggle("module-selected", selectedModule === m.id);
         head.appendChild(headText);
+        head.addEventListener("click", (e) => {
+          if (e.target.closest(".more-ports-trigger")) return;
+          clearArmed();
+          selectedModule = selectedModule === m.id ? "" : m.id;
+          render();
+        });
         box.appendChild(head);
 
         const portsWrap = document.createElement("div");
@@ -490,32 +519,29 @@
           return pname;
         }
 
-        const visiblePorts = m.ports.filter(p => isPortVisible(m.id, p));
-        const ins = visiblePorts.filter(p => p.direction === "in");
-        const outs = visiblePorts.filter(p => p.direction === "out");
-        const bidi = visiblePorts.filter(p => p.direction === "bidirectional");
-
-        const rows = Math.max(ins.length, outs.length);
-        for (let i = 0; i < rows; i++) {
+        function makeEmptyCell() {
+          const cell = document.createElement("div");
+          cell.className = "port-cell empty";
+          return cell;
+        }
+        function makePairRow() {
           const pairRow = document.createElement("div");
           pairRow.className = "port-pair-row";
-
-          [["in", ins[i]], ["out", outs[i]]].forEach(([side, p]) => {
-            const cell = document.createElement("div");
-            if (!p) { cell.className = "port-cell empty"; pairRow.appendChild(cell); return; }
-            cell.className = "port-cell " + side;
-            cell.title = p.name + (p.defaultNote ? " — " + p.defaultNote : "");
-            const dot = makeDot(p);
-            const pname = makePname(p);
-            cell.appendChild(dot); cell.appendChild(pname);
-            attachPortEvents(dot, m.id, p.id, cell, false);
-            pairRow.appendChild(cell);
-          });
-
-          portsWrap.appendChild(pairRow);
+          pairRow.appendChild(makeEmptyCell());
+          pairRow.appendChild(makeEmptyCell());
+          return pairRow;
         }
-
-        bidi.forEach(p => {
+        function makePortCell(p, side) {
+          const cell = document.createElement("div");
+          cell.className = "port-cell " + side;
+          cell.title = p.name + (p.defaultNote ? " — " + p.defaultNote : "");
+          const dot = makeDot(p);
+          const pname = makePname(p);
+          cell.appendChild(dot); cell.appendChild(pname);
+          attachPortEvents(dot, m.id, p.id, cell, false);
+          return cell;
+        }
+        function makeBidirectionalRow(p) {
           const row = document.createElement("div");
           row.className = "portrow dir-bidirectional";
           row.title = p.name + (p.defaultNote ? " — " + p.defaultNote : "");
@@ -523,8 +549,31 @@
           const pname = makePname(p);
           row.appendChild(dot); row.appendChild(pname);
           attachPortEvents(dot, m.id, p.id, row, false);
-          portsWrap.appendChild(row);
+          return row;
+        }
+
+        const visiblePorts = m.ports.filter(p => isPortVisible(m.id, p));
+        let pairRow = null;
+        visiblePorts.forEach(p => {
+          if (p.direction === "bidirectional") {
+            if (pairRow) {
+              portsWrap.appendChild(pairRow);
+              pairRow = null;
+            }
+            portsWrap.appendChild(makeBidirectionalRow(p));
+            return;
+          }
+
+          const side = p.direction === "out" ? "out" : "in";
+          const cellIndex = side === "in" ? 0 : 1;
+          if (!pairRow) pairRow = makePairRow();
+          if (!pairRow.children[cellIndex].classList.contains("empty")) {
+            portsWrap.appendChild(pairRow);
+            pairRow = makePairRow();
+          }
+          pairRow.replaceChild(makePortCell(p, side), pairRow.children[cellIndex]);
         });
+        if (pairRow) portsWrap.appendChild(pairRow);
 
         box.appendChild(portsWrap);
 
@@ -534,6 +583,7 @@
           const trigger = document.createElement("button");
           trigger.type = "button";
           trigger.className = "more-ports-trigger";
+          trigger.classList.toggle("has-hidden-ports", m.ports.some(p => !isPortVisible(m.id, p)));
           trigger.textContent = "+";
           trigger.title = "Ports ein-/ausblenden";
           head.appendChild(trigger);
@@ -542,7 +592,6 @@
           popover.className = "ports-popover";
 
           m.ports.forEach(p => {
-            const pk = portKey(m.id, p.id);
             const isCabled = isPortCabled(m.id, p.id);
             const visible = isPortVisible(m.id, p);
 
@@ -617,33 +666,27 @@
     return { x: dr.left + dr.width / 2 - cr.left + canvas.scrollLeft, y: dr.top + dr.height / 2 - cr.top + canvas.scrollTop };
   }
 
-  function bezierPath(a, b) {
-    const dx = Math.max(40, Math.abs(b.x - a.x) / 2);
-    const sx1 = a.x + (a.side === "left" ? -dx : dx);
-    const sx2 = b.x + (b.side === "left" ? -dx : dx);
-    return `M ${a.x} ${a.y} C ${sx1} ${a.y}, ${sx2} ${b.y}, ${b.x} ${b.y}`;
-  }
-
-  function sideOf(mod, portId) {
-    const p = findPort(mod, portId);
-    if (!p) return "right";
-    return p.direction === "out" ? "right" : "left";
+  function linePath(a, b) {
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
   }
 
   function reachableFromVoice(voiceId) {
     if (!voiceId) return null;
     const start = state.modules.find(m => m.voice === voiceId);
-    if (!start) return null;
-    const seen = new Set([start.id]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      state.connections.forEach(c => {
-        if (seen.has(c.fromMod) && !seen.has(c.toMod)) { seen.add(c.toMod); changed = true; }
-        if (seen.has(c.toMod) && !seen.has(c.fromMod)) { seen.add(c.fromMod); changed = true; }
-      });
-    }
-    return seen;
+    return start ? moduleReach(start.id) : null;
+  }
+
+  function activeFilterReach() {
+    return {
+      voice: reachableFromVoice(selectedVoice),
+      module: moduleReach(selectedModule)
+    };
+  }
+
+  function modulePassesFilters(modId, reach) {
+    if (reach.voice && !reach.voice.has(modId)) return false;
+    if (reach.module && !reach.module.has(modId)) return false;
+    return true;
   }
 
   function drawCables() {
@@ -651,31 +694,28 @@
     if (!svg) return;
     Array.from(svg.querySelectorAll("path.cable")).forEach(p => p.remove());
 
-    const reach = reachableFromVoice(selectedVoice);
+    const reach = activeFilterReach();
 
     state.connections.forEach(c => {
       const fromDot = portEls[portKey(c.fromMod, c.fromPort)];
       const toDot = portEls[portKey(c.toMod, c.toPort)];
       if (!fromDot || !toDot) return;
       const fromPort = findPort(c.fromMod, c.fromPort);
-      const a = dotCenter(fromDot); a.side = sideOf(c.fromMod, c.fromPort);
-      const b = dotCenter(toDot); b.side = sideOf(c.toMod, c.toPort);
+      const a = dotCenter(fromDot);
+      const b = dotCenter(toDot);
 
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("d", bezierPath(a, b));
+      path.setAttribute("d", linePath(a, b));
       path.setAttribute("class", "cable");
       path.setAttribute("stroke", layerColor(fromPort ? fromPort.layer : "mod"));
       path.dataset.connId = c.id;
 
       const layerOn = activeLayers.has(fromPort ? fromPort.layer : "mod");
-      const touchesVoice = reach ? (reach.has(c.fromMod) && reach.has(c.toMod)) : true;
+      const matchesFilters = modulePassesFilters(c.fromMod, reach) && modulePassesFilters(c.toMod, reach);
 
-      if (reach) {
-        if (touchesVoice && layerOn) { path.classList.add("hi"); }
-        else { path.classList.add("faded"); path.style.display = layerOn ? "" : "none"; }
-      } else {
-        path.style.display = layerOn ? "" : "none";
-      }
+      path.style.display = layerOn ? "" : "none";
+      if (!matchesFilters) path.classList.add("faded");
+      else if (reach.voice) path.classList.add("hi");
 
       path.addEventListener("dblclick", (e) => { e.stopPropagation(); removeConnection(c.id); });
       path.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); removeConnection(c.id); });
@@ -685,8 +725,7 @@
 
     document.querySelectorAll(".modbox").forEach(box => {
       const id = box.dataset.mod;
-      if (!reach) { box.classList.remove("dim"); return; }
-      box.classList.toggle("dim", !reach.has(id));
+      box.classList.toggle("dim", !modulePassesFilters(id, reach));
     });
   }
 
@@ -810,11 +849,11 @@
     const fromDot = portEls[portKey(dragging.fromMod, dragging.fromPort)];
     if (!fromDot) return;
 
-    const a = dotCenter(fromDot); a.side = sideOf(dragging.fromMod, dragging.fromPort);
+    const a = dotCenter(fromDot);
     const canvas = document.getElementById("canvas");
     const cr = canvas.getBoundingClientRect();
-    const b = { x: e.clientX - cr.left + canvas.scrollLeft, y: e.clientY - cr.top + canvas.scrollTop, side: "left" };
-    dragging.lineEl.setAttribute("d", bezierPath(a, b));
+    const b = { x: e.clientX - cr.left + canvas.scrollLeft, y: e.clientY - cr.top + canvas.scrollTop };
+    dragging.lineEl.setAttribute("d", linePath(a, b));
   }
 
   function endDrag() {
@@ -856,8 +895,11 @@
     reader.onload = () => {
       try {
         state = parseXML(reader.result);
+        clearArmed();
         revealedPorts.clear();
         hiddenOverride.clear();
+        selectedVoice = "";
+        selectedModule = "";
 
         document.getElementById("status").textContent = `${state.title} — ${state.modules.length} Module, ${state.connections.length} Verbindungen geladen`;
         document.getElementById("exportName").value = (file.name.replace(/\.xml$/i, "") || "patch") + "-patched.xml";
@@ -889,7 +931,14 @@
     }
   });
 
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearArmed(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    clearArmed();
+    if (selectedModule) {
+      selectedModule = "";
+      render();
+    }
+  });
   document.addEventListener("click", (e) => {
     if (!e.target.closest('.more-ports-trigger') && !e.target.closest('.ports-popover')) {
       document.querySelectorAll('.ports-popover.show').forEach(p => p.classList.remove('show'));
